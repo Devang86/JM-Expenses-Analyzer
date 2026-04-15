@@ -439,8 +439,26 @@ def load_daybook(uploaded_files):
 
 def load_tb(uploaded_file):
     """Load TB sheet and Expenses sheet from TB file."""
-    tb = pd.read_excel(uploaded_file, sheet_name="TB", header=1, engine="openpyxl")
-    expenses = pd.read_excel(uploaded_file, sheet_name="Expenses", header=2, engine="openpyxl")
+    # Read all sheet names and match case-insensitively
+    xl = pd.ExcelFile(uploaded_file, engine="openpyxl")
+    sheet_map = {s.lower().strip(): s for s in xl.sheet_names}
+
+    tb_key = sheet_map.get("tb")
+    exp_key = sheet_map.get("expenses") or sheet_map.get("expense")
+
+    if not tb_key:
+        raise ValueError(
+            f"Sheet 'TB' not found in uploaded file. "
+            f"Available sheets: {xl.sheet_names}"
+        )
+    if not exp_key:
+        raise ValueError(
+            f"Sheet 'Expenses' not found in uploaded file. "
+            f"Available sheets: {xl.sheet_names}"
+        )
+
+    tb = pd.read_excel(xl, sheet_name=tb_key, header=1)
+    expenses = pd.read_excel(xl, sheet_name=exp_key, header=2)
     return tb, expenses
 
 
