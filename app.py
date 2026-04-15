@@ -518,6 +518,15 @@ def get_quarter_end_detail_label(q, fy_year_end):
     return mapping.get(q, q)
 
 
+def _normalize_gl(val):
+    """Normalize a GL code to a canonical string to avoid int/float/str mismatches."""
+    if pd.isna(val):
+        return None
+    if isinstance(val, float) and val == int(val):
+        return str(int(val))
+    return str(val).strip()
+
+
 def map_gl_to_category(tb):
     """Create GL code -> (New code / grouping code, GL Name) mapping from TB."""
     mapping = {}
@@ -526,7 +535,7 @@ def map_gl_to_category(tb):
         gl_code = row.get("GL code")
         gl_name = row.get("GL Name", "")
         if pd.notna(new_code) and pd.notna(gl_code):
-            mapping[gl_code] = {"grouping_code": str(new_code).strip(), "gl_name": gl_name}
+            mapping[_normalize_gl(gl_code)] = {"grouping_code": str(new_code).strip(), "gl_name": gl_name}
     return mapping
 
 
@@ -536,13 +545,17 @@ def filter_other_expenses(daybook, gl_mapping, valid_grouping_codes):
         gl for gl, info in gl_mapping.items()
         if info["grouping_code"] in valid_grouping_codes
     }
-    filtered = daybook[daybook["G/L Account No."].isin(other_exp_gls)].copy()
-    filtered["Grouping Code"] = filtered["G/L Account No."].map(
+    # Normalize daybook GL codes to match mapping keys
+    daybook = daybook.copy()
+    daybook["_GL_Norm"] = daybook["G/L Account No."].apply(_normalize_gl)
+    filtered = daybook[daybook["_GL_Norm"].isin(other_exp_gls)].copy()
+    filtered["Grouping Code"] = filtered["_GL_Norm"].map(
         lambda x: gl_mapping.get(x, {}).get("grouping_code", "UNKNOWN")
     )
-    filtered["GL Name"] = filtered["G/L Account No."].map(
+    filtered["GL Name"] = filtered["_GL_Norm"].map(
         lambda x: gl_mapping.get(x, {}).get("gl_name", "")
     )
+    filtered.drop(columns=["_GL_Norm"], inplace=True)
     return filtered
 
 
@@ -579,10 +592,13 @@ def compute_cumulative_by_quarter(filtered_daybook, quarters, gl_mapping, valid_
     q_order = ["Q1", "Q2", "Q3", "Q4"]
     q_present = [q for q in q_order if q in quarters]
 
+    # Normalize GL codes for consistent grouping
+    df["_GL_Norm"] = df["G/L Account No."].apply(_normalize_gl)
+
     # Aggregate per GL per quarter
-    quarterly = df.groupby(["G/L Account No.", "Quarter"])["Net"].sum().reset_index()
+    quarterly = df.groupby(["_GL_Norm", "Quarter"])["Net"].sum().reset_index()
     quarterly_pivot = quarterly.pivot_table(
-        index="G/L Account No.", columns="Quarter", values="Net", fill_value=0
+        index="_GL_Norm", columns="Quarter", values="Net", fill_value=0
     )
 
     # Compute cumulative across quarters
@@ -595,6 +611,7 @@ def compute_cumulative_by_quarter(filtered_daybook, quarters, gl_mapping, valid_
 
     # Add GL metadata
     quarterly_pivot = quarterly_pivot.reset_index()
+    quarterly_pivot.rename(columns={"_GL_Norm": "G/L Account No."}, inplace=True)
     quarterly_pivot["Grouping Code"] = quarterly_pivot["G/L Account No."].map(
         lambda x: gl_mapping.get(x, {}).get("grouping_code", "UNKNOWN")
     )
@@ -2016,6 +2033,8 @@ def main():
     # Filter other expenses
     with st.spinner("Filtering Other Expenses entries from daybook..."):
         filtered = filter_other_expenses(daybook, gl_mapping, valid_grouping_codes)
+        # Normalize GL codes in filtered daybook to match quarterly_pivot keys
+        filtered["G/L Account No."] = filtered["G/L Account No."].apply(_normalize_gl)
         st.success(f"Other Expenses entries: {len(filtered):,} out of {len(daybook):,} total")
 
     # Compute cumulative
